@@ -1,23 +1,30 @@
 "use client";
-import {useMemo,useState} from "react";
-const qs=[
- ["attract","De onde vêm a maior parte das oportunidades hoje?",["Indicação / orgânico","Anúncios","Prospecção ativa","É bem imprevisível"],[70,75,60,30]],
- ["convert","Quando um lead chega, existe um processo comercial claro até o fechamento?",["Sim, e medimos","Existe, mas varia","Muito depende de mim","Não temos processo"],[85,60,40,20]],
- ["operate","Quanto da operação ainda depende de tarefas manuais, planilhas ou retrabalho?",["Quase nada","Algumas partes","Bastante","Quase tudo"],[85,65,40,20]],
- ["measure","Tu consegue olhar números e saber onde está perdendo dinheiro ou oportunidade?",["Sim, com clareza","Mais ou menos","Só alguns números","Praticamente não"],[90,60,40,20]],
- ["scale","Se as vendas dobrassem no próximo mês, tua estrutura aguentaria?",["Sim, tranquilamente","Com alguns ajustes","Seria difícil","Viraria caos"],[90,65,40,20]]
+import {FormEvent,useMemo,useState} from "react";
+type Msg={role:"agent"|"user";text:string};
+const stages=[
+ {key:"context",q:"Pra começar: me conta com tuas palavras o que a empresa faz, para quem vende e como ganha dinheiro hoje."},
+ {key:"goal",q:"Boa. E o que tu mais gostaria de melhorar nos próximos meses? Pode ser vendas, geração de demanda, operação, margem, processo — o que mais pesa hoje?"},
+ {key:"numbers",q:"Quero colocar um pouco de número nisso. O que tu consegue me dizer sobre faturamento ou ticket, quantidade de leads/oportunidades por mês e quantas vendas normalmente fecham? Não precisa ter tudo exato."},
+ {key:"attract",q:"Hoje, de onde vêm as oportunidades? Me conta o que vocês fazem para atrair clientes e o que parece funcionar — ou não funcionar."},
+ {key:"convert",q:"Quando alguém demonstra interesse, o que acontece até virar cliente? Tem CRM, follow-up, etapas comerciais, alguém responsável?"},
+ {key:"operate",q:"E por dentro da empresa: onde ainda tem muita planilha, tarefa manual, retrabalho, demora ou dependência de uma pessoa específica?"},
+ {key:"measure",q:"Quais números vocês acompanham de verdade para decidir? Tu consegue enxergar onde uma oportunidade ou dinheiro está sendo perdido?"},
+ {key:"scale",q:"Última parte: se a demanda dobrasse nos próximos 60 dias, o que provavelmente quebraria primeiro na empresa?"}
 ] as const;
-const labels:{[k:string]:string}={attract:"Atrair",convert:"Converter",operate:"Operar",measure:"Medir",scale:"Escalar"};
+const pillarKeys=["attract","convert","operate","measure","scale"] as const;
+const names:Record<string,string>={attract:"Atrair",convert:"Converter",operate:"Operar",measure:"Medir",scale:"Escalar"};
+function heuristic(text:string,key:string){const t=text.toLowerCase();let n=55;if(t.length>180)n+=10;if(/crm|processo|m[eé]trica|dashboard|automat|funil|follow.?up|taxa|convers/.test(t))n+=12;if(/n[aã]o sei|nenhum|nada|caos|manual|planilha|improviso|depende de mim|perd/.test(t))n-=20;if(key==="measure"&&!/n[uú]mero|taxa|fatur|ticket|lead|venda|m[eé]trica|kpi|dashboard/.test(t))n-=12;return Math.max(20,Math.min(90,n))}
 export default function MendesScan(){
- const [open,setOpen]=useState(false),[step,setStep]=useState(0),[scores,setScores]=useState<Record<string,number>>({});
- const done=step>=qs.length; const overall=useMemo(()=>{const v=Object.values(scores);return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):0},[scores]);
- const lowest=done?Object.entries(scores).sort((a,b)=>a[1]-b[1])[0]:null;
- function answer(score:number){const key=qs[step][0];setScores(s=>({...s,[key]:score}));setStep(x=>x+1)}
- function reset(){setStep(0);setScores({})}
- return <><button className="primary scanStart" onClick={()=>setOpen(true)}>Quero minha pré-análise <b>↗</b></button>
- {open&&<div className="scanModal" role="dialog" aria-modal="true" aria-label="Mendes Scan"><button className="scanClose" onClick={()=>setOpen(false)} aria-label="Fechar">×</button>
- <div className="scanPanel"><div className="scanTop"><span>MENDES SCAN · PRÉ-ANÁLISE</span><b>{done?"LEITURA INICIAL":`${step+1}/${qs.length}`}</b></div>
- {!done?<><div className="scanProgress"><i style={{width:`${(step/qs.length)*100}%`}}/></div><small>{labels[qs[step][0]]}</small><h3>{qs[step][1]}</h3><div className="scanOptions">{qs[step][2].map((x,i)=><button key={x} onClick={()=>answer(qs[step][3][i])}><span>0{i+1}</span>{x}<b>→</b></button>)}</div><p className="scanNote">Sem resposta certa. A ideia é localizar onde existe mais atrito hoje.</p></>:
- <div className="scanResult"><small>TEU MENDES SCORE INICIAL</small><div className="scoreBig">{overall}<span>/100</span></div><h3>O principal sinal de atenção está em <em>{lowest?labels[lowest[0]]:"—"}</em>.</h3><div className="scoreBars">{Object.entries(scores).map(([k,v])=><div key={k}><label>{labels[k]} <b>{v}</b></label><i><span style={{width:`${v}%`}}/></i></div>)}</div><p>Isso ainda não é um diagnóstico completo. É uma leitura rápida para indicar onde vale investigar primeiro.</p><div className="scanResultActions"><a className="primary" href="https://wa.me/5551984705191?text=Oi%2C%20fiz%20a%20pr%C3%A9-an%C3%A1lise%20do%20Mendes%20Scan%20e%20quero%20aprofundar." target="_blank" rel="noreferrer">Quero aprofundar <b>↗</b></a><button onClick={reset}>Refazer leitura</button></div></div>}
+ const [open,setOpen]=useState(false),[step,setStep]=useState(0),[input,setInput]=useState(""),[answers,setAnswers]=useState<Record<string,string>>({}),[contact,setContact]=useState({name:"",company:"",whatsapp:"",email:""}),[captured,setCaptured]=useState(false);
+ const msgs=useMemo<Msg[]>(()=>{const out:Msg[]=[{role:"agent",text:"Oi. Eu sou o assistente virtual do Studio Mendes. Vou fazer uma leitura inicial do teu negócio — sem formulário engessado. Quanto mais contexto tu me der, melhor fica a análise."}];stages.slice(0,step+1).forEach((s,i)=>{if(i<step&&answers[s.key])out.push({role:"user",text:answers[s.key]});if(i===step)out.push({role:"agent",text:s.q})});return out},[step,answers]);
+ const done=step>=stages.length;
+ const scores=useMemo(()=>Object.fromEntries(pillarKeys.map(k=>[k,heuristic(answers[k]||"",k)])),[answers]);
+ const overall=Math.round(Object.values(scores).reduce((a,b)=>a+b,0)/5);const low=Object.entries(scores).sort((a,b)=>a[1]-b[1])[0];
+ function send(e:FormEvent){e.preventDefault();if(input.trim().length<8)return;setAnswers(a=>({...a,[stages[step].key]:input.trim()}));setInput("");setStep(s=>s+1)}
+ function submitLead(e:FormEvent){e.preventDefault();if(!contact.name||!contact.whatsapp)return;setCaptured(true)}
+ return <><button className="primary scanStart" onClick={()=>setOpen(true)}>Quero minha pré-análise <b>↗</b></button>{open&&<div className="scanModal" role="dialog" aria-modal="true"><button className="scanClose" onClick={()=>setOpen(false)}>×</button><div className="scanPanel scanConversation"><div className="scanTop"><span>MENDES SCAN · ASSISTENTE VIRTUAL</span><b>{done?"ANÁLISE":"CONVERSA"}</b></div>
+ {!done?<><div className="chatLog">{msgs.slice(-3).map((m,i)=><div className={"bubble "+m.role} key={i}>{m.role==="agent"&&<small>MENDES · IA</small>}<p>{m.text}</p></div>)}</div><form className="chatComposer" onSubmit={send}><textarea autoFocus value={input} onChange={e=>setInput(e.target.value)} placeholder="Pode responder do teu jeito..." rows={4}/><div><span>{step+1} de {stages.length} · conversa inicial</span><button disabled={input.trim().length<8}>Enviar <b>↗</b></button></div></form></>:
+ !captured?<div className="leadGate"><small>LEITURA PRONTA</small><h3>Já tenho contexto suficiente para montar tua pré-análise.</h3><p>Antes de liberar o resultado, deixa teus dados para eu identificar essa conversa e o Studio conseguir continuar contigo caso faça sentido.</p><form onSubmit={submitLead}><input placeholder="Teu nome *" value={contact.name} onChange={e=>setContact({...contact,name:e.target.value})}/><input placeholder="Empresa" value={contact.company} onChange={e=>setContact({...contact,company:e.target.value})}/><input placeholder="WhatsApp *" value={contact.whatsapp} onChange={e=>setContact({...contact,whatsapp:e.target.value})}/><input type="email" placeholder="E-mail" value={contact.email} onChange={e=>setContact({...contact,email:e.target.value})}/><button className="primary">Ver minha pré-análise <b>↗</b></button></form><span className="privacy">Usamos esses dados somente para identificar tua análise e dar continuidade ao contato.</span></div>:
+ <div className="scanResult"><small>PRÉ-ANÁLISE · {contact.company||contact.name}</small><div className="scoreBig">{overall}<span>/100</span></div><h3>O primeiro eixo que merece investigação é <em>{names[low[0]]}</em>.</h3><div className="scoreBars">{Object.entries(scores).map(([k,v])=><div key={k}><label>{names[k]} <b>{v}</b></label><i><span style={{width:`${v}%`}}/></i></div>)}</div><p>Essa leitura é preliminar. No Scan completo, o Studio valida números, evidências e prioridades antes de recomendar qualquer solução.</p><div className="scanResultActions"><a className="primary" href={`https://wa.me/5551984705191?text=${encodeURIComponent(`Oi, sou ${contact.name} da ${contact.company||"minha empresa"}. Fiz a pré-análise do Mendes Scan e quero agendar o Scan completo.`)}`} target="_blank" rel="noreferrer">Agendar Scan completo <b>↗</b></a></div></div>}
  </div></div>}</>
 }
