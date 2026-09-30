@@ -36,7 +36,7 @@ export async function POST(req: Request) {
 
     const fallback = analyzeConversation(history);
     const key = process.env.GEMINI_API_KEY;
-    if (!key) return NextResponse.json(fallback);
+    if (!key) return NextResponse.json({...fallback,_provider:"fallback",_reason:"missing_key"});
 
     const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
@@ -49,11 +49,11 @@ export async function POST(req: Request) {
       }),
       signal: AbortSignal.timeout(12000)
     });
-    if (!response.ok) return NextResponse.json(fallback);
+    if (!response.ok) { const detail = await response.text().catch(()=>""); console.error("Gemini API error", response.status, detail.slice(0,800)); return NextResponse.json({...fallback,_provider:"fallback",_reason:`gemini_http_${response.status}`}); }
     const payload = await response.json();
     const raw = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) return NextResponse.json(fallback);
-    return NextResponse.json(normalize(JSON.parse(raw), fallback));
+    if (!raw) return NextResponse.json({...fallback,_provider:"fallback",_reason:"empty_gemini_response"});
+    return NextResponse.json({...normalize(JSON.parse(raw), fallback),_provider:"gemini",_model:model});
   } catch {
     return NextResponse.json({ error: "agent_failed" }, { status: 500 });
   }
