@@ -38,7 +38,17 @@ export async function POST(req: Request) {
     const key = process.env.GEMINI_API_KEY;
     if (!key) return NextResponse.json({...fallback,_provider:"fallback",_reason:"missing_key"});
 
-    const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    let model = process.env.GEMINI_MODEL;
+    if (!model) {
+      const modelsResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, { signal: AbortSignal.timeout(8000) });
+      if (!modelsResponse.ok) return NextResponse.json({...fallback,_provider:"fallback",_reason:`models_http_${modelsResponse.status}`});
+      const modelsPayload = await modelsResponse.json();
+      const available = Array.isArray(modelsPayload?.models) ? modelsPayload.models : [];
+      const compatible = available.filter((m:any)=>Array.isArray(m?.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"));
+      const preferred = compatible.find((m:any)=>/gemini.*flash/i.test(m?.name||"")) || compatible.find((m:any)=>/gemini/i.test(m?.name||"")) || compatible[0];
+      model = typeof preferred?.name === "string" ? preferred.name.replace(/^models\//,"") : undefined;
+      if (!model) return NextResponse.json({...fallback,_provider:"fallback",_reason:"no_compatible_model"});
+    }
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
