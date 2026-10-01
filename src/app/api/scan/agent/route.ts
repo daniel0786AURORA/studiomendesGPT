@@ -44,35 +44,40 @@ export async function POST(req: Request) {
     const available = Array.isArray(modelsPayload?.models) ? modelsPayload.models : [];
     const compatible = available.filter((m:any)=>Array.isArray(m?.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"));
     const configured = process.env.GEMINI_MODEL?.replace(/^models\//,"");
-    const configuredMatch = configured ? compatible.find((m:any)=>(m?.name||"").replace(/^models\//,"")===configured) : undefined;
-    const preferred = configuredMatch || compatible.find((m:any)=>/gemini.*flash/i.test(m?.name||"")) || compatible.find((m:any)=>/gemini/i.test(m?.name||"")) || compatible[0];
-    const model = typeof preferred?.name === "string" ? preferred.name.replace(/^models\//,"") : undefined;
-    if (!model) return NextResponse.json({...fallback,_provider:"fallback",_reason:"no_compatible_model"});
-    let apiVersion = "v1";
-    let response = await fetch(`https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: history.map((m:string,i:number)=>`${i%2===0?"USUÁRIO":"AGENTE"}: ${m}`).join("\n") }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.35, maxOutputTokens: 1800 }
-      }),
-      signal: AbortSignal.timeout(12000)
+    const candidates = compatible.map((m:any)=>(m?.name||"").replace(/^models\//,"")).filter(Boolean);
+    candidates.sort((a:string,b:string)=>{
+      const score=(x:string)=>(x===configured?100:0)+(/gemini.*flash/i.test(x)?20:0)+(/gemini/i.test(x)?10:0);
+      return score(b)-score(a);
     });
-    if (!response.ok && response.status === 404) {
-      apiVersion = "v1beta";
-      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: "user", parts: [{ text: history.map((m:string,i:number)=>`${i%2===0?"USUÁRIO":"AGENTE"}: ${m}`).join("\\n") }] }],
-          generationConfig: { responseMimeType: "application/json", temperature: 0.35, maxOutputTokens: 1800 }
-        }),
-        signal: AbortSignal.timeout(12000)
-      });
+    if (!candidates.length) return NextResponse.json({...fallback,_provider:"fallback",_reason:"no_compatible_model"});
+
+    const requestBody = JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: "user", parts: [{ text: history.map((m:string,i:number)=>`${i%2===0?"USUÁRIO":"AGENTE"}: ${m}`).join("\n") }] }],
+      generationConfig: { responseMimeType: "application/json", temperature: 0.35, maxOutputTokens: 1800 }
+    });
+
+    let response: Response | null = null;
+    let model = "";
+    let apiVersion = "";
+    const attempts:string[] = [];
+    for (const candidate of candidates.slice(0,8)) {
+      for (const version of ["v1","v1beta"]) {
+        model = candidate; apiVersion = version;
+        response = await fetch(`https://generativelanguage.googleapis.com/${version}/models/${candidate}:generateContent?key=${encodeURIComponent(key)}`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: requestBody, signal: AbortSignal.timeout(12000)
+        });
+        attempts.push(`${version}:${candidate}:${response.status}`);
+        if (response.ok) break;
+        if (![404,400].includes(response.status)) break;
+      }
+      if (response?.ok) break;
     }
-    if (!response.ok) { const detail = await response.text().catch(()=>""); console.error("Gemini API error", response.status, detail.slice(0,800)); return NextResponse.json({...fallback,_provider:"fallback",_reason:`gemini_http_${response.status}_${apiVersion}_${model}`}); }
+    if (!response?.ok) {
+      const detail = response ? await response.text().catch(()=>"") : "";
+      console.error("Gemini attempts failed", attempts, detail.slice(0,800));
+      return NextResponse.json({...fallback,_provider:"fallback",_reason:`all_models_failed_${response?.status||"none"}`});
+    }
     const payload = await response.json();
     const raw = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!raw) return NextResponse.json({...fallback,_provider:"fallback",_reason:"empty_gemini_response"});
